@@ -38,6 +38,9 @@ import androidx.webkit.ProfileStore;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
+import com.example.coupenapp.telegram.TelegramBotManager;
+import com.example.coupenapp.telegram.TelegramConfig;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -55,6 +58,7 @@ public class MainActivity extends AppCompatActivity {
     private Button applyCodeButton;
     private Button refreshAllButton;
     private Button manageUrlButton;
+    private Button botControlButton;
 
     private LinearLayout webviewContainer;
     private LinearLayout buttonsContainer;
@@ -80,6 +84,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean sessionIsolationWarningShown = false;
     // Last code applied via "Apply to All" — re-applied to cards that finish loading later.
     private String pendingGiftCode = null;
+    // Registered with TelegramBotManager so remote coupons reuse Apply + Fire.
+    private TelegramBotManager.CouponConsumer couponConsumer;
 
     // ─── Link model ──────────────────────────────────────────────────────────
 
@@ -128,6 +134,7 @@ public class MainActivity extends AppCompatActivity {
         telegramHeaderLink  = findViewById(R.id.telegramHeaderLink);
         manageUrlButton     = findViewById(R.id.manageUrlButton);
         buttonsContainer    = findViewById(R.id.buttonsContainer);
+        botControlButton    = findViewById(R.id.botControlButton);
 
         // Enable cookies globally for WebView
         CookieManager.getInstance().setAcceptCookie(true);
@@ -142,6 +149,14 @@ public class MainActivity extends AppCompatActivity {
         loadLinks();
         setupClickListeners();
         restoreAppState();
+
+        // ── Telegram auto-claim: deliver detected coupons into the EXISTING Apply + Fire ──
+        couponConsumer = this::onRemoteCoupon;
+        TelegramBotManager botManager = TelegramBotManager.getInstance(this);
+        botManager.setCouponConsumer(couponConsumer);
+        if (new TelegramConfig(this).isAutoStart()) {
+            botManager.start();
+        }
     }
 
     @Override
@@ -155,6 +170,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        TelegramBotManager.getInstance(this).clearCouponConsumer(couponConsumer);
         destroyAllWebViews();
         super.onDestroy();
     }
@@ -234,6 +250,9 @@ public class MainActivity extends AppCompatActivity {
             Intent intent = new Intent(MainActivity.this, ManageUrlActivity.class);
             startActivityForResult(intent, MANAGE_URL_REQUEST_CODE);
         });
+
+        botControlButton.setOnClickListener(v ->
+                startActivity(new Intent(MainActivity.this, BotControlActivity.class)));
     }
 
     @Override
@@ -654,5 +673,25 @@ public class MainActivity extends AppCompatActivity {
 
     private void showToast(String message) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    // ─── Telegram auto-claim hook ─────────────────────────────────────────────
+
+    /**
+     * Entry point for the Telegram bot — called on the main thread with a coupon
+     * code detected in the group. Reuses the EXISTING Apply + Fire pipeline
+     * unchanged (no WebView is recreated or reloaded).
+     *
+     * @return true if the coupon was fired into open cards, false if none are open.
+     */
+    public boolean onRemoteCoupon(String code) {
+        if (code == null || code.trim().isEmpty()) return false;
+        giftCodeEditText.setText(code);
+        if (!webViews.isEmpty()) {
+            applyAndFireToAll(code);
+            return true;
+        }
+        showToast("Coupon received but no cards open: " + code);
+        return false;
     }
 }
